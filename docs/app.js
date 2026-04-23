@@ -514,8 +514,6 @@ function renderSetup() {
         <button type="submit" class="btn-primary" id="btn-connect">Conectar</button>
       </form>
 
-      ${renderConnectionGuideCard(cfg.url)}
-
       ${linked ? renderLinkedSection() : renderAuthSection()}
     </div>
   `;
@@ -1123,37 +1121,6 @@ function showMsg(elId, text, type) {
   if (!el) return;
   el.textContent = text;
   el.className = `setup-msg setup-msg--${type}`;
-}
-
-function renderConnectionGuideCard(configuredUrl = '') {
-  const relayMode = isRelayUrl(configuredUrl);
-  const urlLine = relayMode
-    ? `URL pública configurada: <code>${esc(configuredUrl || RELAY_API_SAMPLE)}</code>.`
-    : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
-  const apiKeyLine = relayMode
-    ? 'En modo relay la API key directa del bridge no se usa como vía pública normal y esta PWA no la envía.'
-    : 'En modo directo la API key sigue siendo obligatoria en el navegador.';
-  const intro = 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.';
-
-  return `
-    <section class="card guide-card setup-guide-card">
-      <div class="card-header">
-        <span class="card-icon">🔗</span>
-        <span class="card-title">Cómo Conecta Hoy</span>
-      </div>
-      <div class="guide-body">
-        <p class="guide-kicker">${intro}</p>
-        <ul class="guide-list">
-          <li>Flujo real: <code>web HTTPS</code> → <code>relay HTTPS</code> → <code>bridge HTTP</code> del mod en el servidor del juego.</li>
-          <li>${urlLine}</li>
-          <li>El bridge toma su puerto desde <code>config.json</code>. Puerto por defecto: <code>${BRIDGE_DEFAULT_PORT}</code>. Puerto recomendado hoy: <code>${BRIDGE_RECOMMENDED_PORT}/TCP</code>.</li>
-          <li>Si cambias el puerto, el relay seguirá funcionando si ese puerto está abierto y <code>PublicBridgeUrl</code> usa el mismo puerto real.</li>
-          <li>Seguridad recomendada: si tu hosting lo permite, abre el puerto del bridge solo para <code>${RELAY_ALLOWED_IP}</code>. Si no puedes filtrar por IP origen, usar un puerto no predeterminado sigue siendo mejor que reutilizar siempre <code>${BRIDGE_DEFAULT_PORT}</code>.</li>
-        </ul>
-        <p class="guide-note">${apiKeyLine}</p>
-      </div>
-    </section>
-  `;
 }
 
 // ─── Service worker ───────────────────────────────────────────────────────────
