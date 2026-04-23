@@ -17,6 +17,11 @@ const STATUS_POLL = 15000;
 const CHAT_POLL   = 3000;
 const PANEL_POLL  = 30000;
 const TIMEOUT_MS  = 8000;
+const BRIDGE_DEFAULT_PORT = 42421;
+const BRIDGE_RECOMMENDED_PORT = 43000;
+const RELAY_PUBLIC_BASE = 'https://bridgerelay.axin.es';
+const RELAY_ALLOWED_IP = '212.227.153.142';
+const RELAY_API_SAMPLE = `${RELAY_PUBLIC_BASE}/s/mi-server/api`;
 
 // ─── Estado global ────────────────────────────────────────────────────────────
 
@@ -53,12 +58,12 @@ function saveConfig(cfg) { localStorage.setItem(CONFIG_KEY, JSON.stringify(cfg))
 function hasConfig() {
   const c = loadConfig();
   if (!c.url) return false;
-  // Modo relay: URL contiene /s/<slug>/api → no se exige API key (el relay la inyecta)
-  if (/\/s\/[^/]+\/api\/?$/i.test(c.url) || /\.workers\.dev/i.test(c.url)) return true;
+  // Modo relay: URL contiene /s/<slug>/api -> el relay inyecta la API key del bridge.
+  if (isRelayUrl(c.url)) return true;
   return !!c.apiKey;
 }
 function isRelayUrl(url) {
-  return !!url && (/\/s\/[^/]+\/api\/?$/i.test(url) || /\.workers\.dev/i.test(url));
+  return !!url && /\/s\/[^/]+\/api\/?$/i.test(String(url).trim());
 }
 
 function loadSession() {
@@ -98,9 +103,10 @@ function handleSessionError(error) {
 function apiHeaders() {
   const cfg = loadConfig();
   const h = {};
-  // En modo relay la API key real la inyecta el Worker; se puede omitir o poner placeholder.
-  if (cfg.apiKey) h['X-Api-Key'] = cfg.apiKey;
-  else if (!isRelayUrl(cfg.url)) h['X-Api-Key'] = ''; // fallará 401 en modo directo sin key
+  const relayMode = isRelayUrl(cfg.url);
+  // En modo relay la API key del bridge no se expone desde el navegador.
+  if (!relayMode && cfg.apiKey) h['X-Api-Key'] = cfg.apiKey;
+  else if (!relayMode) h['X-Api-Key'] = ''; // fallará 401 en modo directo sin key
   if (state.session?.token) h['X-Session'] = state.session.token;
   return h;
 }
@@ -166,7 +172,8 @@ async function refreshSession() {
 
 async function fetchStatus() {
   const cfg = loadConfig();
-  if (!cfg.url || !cfg.apiKey) { setState('setup'); return; }
+  const relayMode = isRelayUrl(cfg.url);
+  if (!cfg.url || (!relayMode && !cfg.apiKey)) { setState('setup'); return; }
 
   try {
     const res = await apiFetch('/status');
@@ -461,6 +468,11 @@ function switchTab(tab) {
 
 const app = document.getElementById('app');
 
+function setAppContext(phase, view = '') {
+  app.dataset.phase = phase || '';
+  app.dataset.view = view || '';
+}
+
 function render() {
   switch (state.phase) {
     case 'setup':   renderSetup();              break;
@@ -478,6 +490,7 @@ function renderSetup() {
   const cfg = loadConfig();
   const linked = state.session != null;
 
+  setAppContext('setup', 'setup');
   app.innerHTML = `
     <div class="setup-screen">
       <div class="setup-logo">
@@ -485,21 +498,23 @@ function renderSetup() {
         <span class="logo-text">AXIN Bridge</span>
       </div>
       <h2 class="setup-title">Configurar servidor</h2>
-      <p class="setup-hint">Introduce la URL del relay (ej. https://axin-relay.&lt;cuenta&gt;.workers.dev/s/&lt;slug&gt;/api) o la dirección directa del bridge. Con relay la API key es opcional.</p>
+      <p class="setup-hint">Modo recomendado hoy: conecta la PWA al relay VPS en <code>${esc(RELAY_PUBLIC_BASE)}</code>. La URL pública normal debe ser del tipo <code>${esc(RELAY_API_SAMPLE)}</code>. Solo usa conexión directa al bridge para despliegues controlados.</p>
       <form id="setup-form" class="setup-form" novalidate>
         <label class="field-label">URL del servidor
           <input id="inp-url" class="field-input" type="url"
-            placeholder="https://axin-relay.xxx.workers.dev/s/mi-server/api" value="${esc(cfg.url || '')}"
+            placeholder="${esc(RELAY_API_SAMPLE)}" value="${esc(cfg.url || '')}"
             autocorrect="off" autocapitalize="none" spellcheck="false" required>
         </label>
         <label class="field-label">API Key <span class="field-hint">(opcional si usas relay)</span>
           <input id="inp-key" class="field-input" type="password"
-            placeholder="Solo para modo directo" value="${esc(cfg.apiKey || '')}"
+            placeholder="Necesaria solo en modo directo" value="${esc(cfg.apiKey || '')}"
             autocorrect="off" autocapitalize="none">
         </label>
         <div id="setup-msg" class="setup-msg hidden"></div>
         <button type="submit" class="btn-primary" id="btn-connect">Conectar</button>
       </form>
+
+      ${renderConnectionGuideCard('setup')}
 
       ${linked ? renderLinkedSection() : renderAuthSection()}
     </div>
@@ -576,7 +591,7 @@ async function handleSetupSubmit(e) {
   const apiKey = document.getElementById('inp-key').value.trim();
   const btn = document.getElementById('btn-connect');
 
-  // Si la URL parece de relay (Cloudflare Worker o /s/<slug>/api), la API key es opcional.
+  // Si la URL parece de relay VPS (/s/<slug>/api), la API key pública no se usa.
   const relayMode = isRelayUrl(url);
   if (!url) { showMsg('setup-msg', 'Introduce la URL.', 'error'); return; }
   if (!relayMode && !apiKey) { showMsg('setup-msg', 'Introduce la API key (o usa una URL de relay).', 'error'); return; }
@@ -596,7 +611,7 @@ async function handleSetupSubmit(e) {
     if (res.status === 401) { showMsg('setup-msg', 'API key incorrecta.', 'error'); return; }
     if (!res.ok) { showMsg('setup-msg', `Error HTTP ${res.status}.`, 'error'); return; }
     await res.json();
-    saveConfig({ url, apiKey });
+    saveConfig({ url, apiKey: relayMode ? '' : apiKey });
     startPolling();
   } catch (err) {
     showMsg('setup-msg', err.name === 'AbortError' ? 'Sin respuesta.' : `Error: ${err.message}`, 'error');
@@ -655,6 +670,7 @@ async function handleSetPassword() {
 // ── Loading ───────────────────────────────────────────────────────────────────
 
 function renderLoading() {
+  setAppContext('loading', 'loading');
   app.innerHTML = `
     <div class="loading-screen">
       <div class="spinner" aria-label="Cargando"></div>
@@ -675,6 +691,7 @@ function renderMainView() {
   if (state.tab === 'admin' && !showAdmin) state.tab = 'status';
   if (state.tab === 'market' && !showMarket) state.tab = 'status';
 
+  setAppContext('online', state.tab);
   app.innerHTML = `
     <header class="header">
       <div class="header-title">
@@ -723,6 +740,7 @@ function renderMainView() {
 // ── Status tab ────────────────────────────────────────────────────────────────
 
 function renderStatusTab(container, d) {
+  const cfg = loadConfig();
   const playerItems = (d.playerList || []).map(p =>
     `<li class="player-item">
       <span class="player-dot"></span>
@@ -775,6 +793,8 @@ function renderStatusTab(container, d) {
 
   container.innerHTML = `
     <div class="cards">
+      ${renderConnectionGuideCard('status', cfg.url)}
+
       <section class="card">
         <details class="card-details" data-panel-key="${playersKey}" ${playersOpen ? 'open' : ''}>
           <summary class="card-header">
@@ -1044,6 +1064,7 @@ function renderAdminTab(container, d) {
 function renderOffline(reason) {
   const lastSeen = state.lastUpdate ? `\u00daltimo dato: ${formatRelTime(state.lastUpdate)}` : 'Sin datos previos';
 
+  setAppContext('offline', 'offline');
   app.innerHTML = `
     <header class="header">
       <div class="header-title">
@@ -1070,6 +1091,7 @@ function renderOffline(reason) {
 // ── Error ─────────────────────────────────────────────────────────────────────
 
 function renderAlert(message) {
+  setAppContext('error', 'error');
   app.innerHTML = `
     <div class="alert-screen">
       <div class="alert-icon">\u26a0</div>
@@ -1104,6 +1126,42 @@ function showMsg(elId, text, type) {
   if (!el) return;
   el.textContent = text;
   el.className = `setup-msg setup-msg--${type}`;
+}
+
+function renderConnectionGuideCard(context, configuredUrl = '') {
+  const relayMode = isRelayUrl(configuredUrl);
+  const detectedMode = relayMode ? 'Relay VPS HTTPS' : 'Directo al bridge';
+  const urlLine = relayMode
+    ? `URL pública configurada: <code>${esc(configuredUrl || RELAY_API_SAMPLE)}</code>.`
+    : context === 'status' && configuredUrl
+      ? `URL configurada en esta PWA: <code>${esc(configuredUrl)}</code>. Modo recomendado hoy: <code>${esc(RELAY_API_SAMPLE)}</code>.`
+      : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
+  const apiKeyLine = relayMode
+    ? 'En modo relay la API key directa del bridge no se usa como vía pública normal y esta PWA no la envía.'
+    : 'En modo directo la API key sigue siendo obligatoria en el navegador.';
+  const intro = context === 'setup'
+    ? 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.'
+    : `Modo detectado en esta PWA: ${detectedMode}.`;
+
+  return `
+    <section class="card guide-card${context === 'setup' ? ' setup-guide-card' : ''}">
+      <div class="card-header">
+        <span class="card-icon">🔗</span>
+        <span class="card-title">${context === 'setup' ? 'Cómo Conecta Hoy' : 'Conexión Actual'}</span>
+      </div>
+      <div class="guide-body">
+        <p class="guide-kicker">${intro}</p>
+        <ul class="guide-list">
+          <li>Flujo real: <code>web HTTPS</code> → <code>relay HTTPS</code> → <code>bridge HTTP</code> del mod en el servidor del juego.</li>
+          <li>${urlLine}</li>
+          <li>El bridge toma su puerto desde <code>config.json</code>. Puerto por defecto: <code>${BRIDGE_DEFAULT_PORT}</code>. Puerto recomendado hoy: <code>${BRIDGE_RECOMMENDED_PORT}/TCP</code>.</li>
+          <li>Si cambias el puerto, el relay seguirá funcionando si ese puerto está abierto y <code>PublicBridgeUrl</code> usa el mismo puerto real.</li>
+          <li>Seguridad recomendada: si tu hosting lo permite, abre el puerto del bridge solo para <code>${RELAY_ALLOWED_IP}</code>. Si no puedes filtrar por IP origen, usar un puerto no predeterminado sigue siendo mejor que reutilizar siempre <code>${BRIDGE_DEFAULT_PORT}</code>.</li>
+        </ul>
+        <p class="guide-note">${apiKeyLine}</p>
+      </div>
+    </section>
+  `;
 }
 
 // ─── Service worker ───────────────────────────────────────────────────────────

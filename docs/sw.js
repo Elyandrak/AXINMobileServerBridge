@@ -1,11 +1,17 @@
 /**
  * AXIN Bridge — Service Worker mínimo
- * Objetivo: hacer la PWA instalable. Sin caching agresivo en v0.1.
- * El endpoint /status siempre va a red — nunca usar caché para datos del servidor.
+ * Objetivo: hacer la PWA instalable sin asumir un puerto fijo del bridge.
+ * Las rutas API del bridge directo y del relay VPS siempre van a red.
  */
 
-const CACHE = 'axin-bridge-v4';
+const CACHE = 'axin-bridge-v5';
 const APP_SHELL = ['./', './index.html', './app.js', './style.css', './manifest.json', './icon.svg'];
+const API_PREFIXES = ['/status', '/chat', '/auth', '/market', '/admin', '/panels'];
+
+function isBridgeApiRequest(url) {
+  if (API_PREFIXES.some(prefix => url.pathname.startsWith(prefix))) return true;
+  return /^\/s\/[^/]+\/api(?:\/|$)/i.test(url.pathname);
+}
 
 // Instalar: cachear el app shell
 self.addEventListener('install', (e) => {
@@ -23,13 +29,12 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-// Fetch: red primero para el endpoint /status; caché para el app shell
+// Fetch: red primero para las APIs del bridge/relay; caché para el app shell
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
 
-  // Las peticiones al endpoint del servidor siempre van a red
-  // Cualquier request a la API del servidor (status, chat, auth, admin) → siempre red
-  if (url.port === '42421' || ['/status', '/chat', '/auth', '/market', '/admin'].some(p => url.pathname.startsWith(p))) {
+  // Cualquier request a la API del bridge o del relay VPS -> siempre red
+  if (isBridgeApiRequest(url)) {
     e.respondWith(
       fetch(e.request).catch(() =>
         new Response(JSON.stringify({ serverOnline: false, error: 'sw_offline' }), {
