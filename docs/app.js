@@ -514,7 +514,7 @@ function renderSetup() {
         <button type="submit" class="btn-primary" id="btn-connect">Conectar</button>
       </form>
 
-      ${renderConnectionGuideCard('setup')}
+      ${renderConnectionGuideCard(cfg.url)}
 
       ${linked ? renderLinkedSection() : renderAuthSection()}
     </div>
@@ -740,7 +740,6 @@ function renderMainView() {
 // ── Status tab ────────────────────────────────────────────────────────────────
 
 function renderStatusTab(container, d) {
-  const cfg = loadConfig();
   const playerItems = (d.playerList || []).map(p =>
     `<li class="player-item">
       <span class="player-dot"></span>
@@ -793,8 +792,6 @@ function renderStatusTab(container, d) {
 
   container.innerHTML = `
     <div class="cards">
-      ${renderConnectionGuideCard('status', cfg.url)}
-
       <section class="card">
         <details class="card-details" data-panel-key="${playersKey}" ${playersOpen ? 'open' : ''}>
           <summary class="card-header">
@@ -1128,26 +1125,21 @@ function showMsg(elId, text, type) {
   el.className = `setup-msg setup-msg--${type}`;
 }
 
-function renderConnectionGuideCard(context, configuredUrl = '') {
+function renderConnectionGuideCard(configuredUrl = '') {
   const relayMode = isRelayUrl(configuredUrl);
-  const detectedMode = relayMode ? 'Relay VPS HTTPS' : 'Directo al bridge';
   const urlLine = relayMode
     ? `URL pública configurada: <code>${esc(configuredUrl || RELAY_API_SAMPLE)}</code>.`
-    : context === 'status' && configuredUrl
-      ? `URL configurada en esta PWA: <code>${esc(configuredUrl)}</code>. Modo recomendado hoy: <code>${esc(RELAY_API_SAMPLE)}</code>.`
-      : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
+    : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
   const apiKeyLine = relayMode
     ? 'En modo relay la API key directa del bridge no se usa como vía pública normal y esta PWA no la envía.'
     : 'En modo directo la API key sigue siendo obligatoria en el navegador.';
-  const intro = context === 'setup'
-    ? 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.'
-    : `Modo detectado en esta PWA: ${detectedMode}.`;
+  const intro = 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.';
 
   return `
-    <section class="card guide-card${context === 'setup' ? ' setup-guide-card' : ''}">
+    <section class="card guide-card setup-guide-card">
       <div class="card-header">
         <span class="card-icon">🔗</span>
-        <span class="card-title">${context === 'setup' ? 'Cómo Conecta Hoy' : 'Conexión Actual'}</span>
+        <span class="card-title">Cómo Conecta Hoy</span>
       </div>
       <div class="guide-body">
         <p class="guide-kicker">${intro}</p>

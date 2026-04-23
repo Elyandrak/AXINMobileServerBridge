@@ -990,6 +990,7 @@ body {
   #app[data-phase="online"][data-view="status"] .tab-bar,
   #app[data-phase="online"][data-view="market"] .tab-bar,
   #app[data-phase="online"][data-view="admin"] .tab-bar {
+    position: static;
     margin-top: 4px;
   }
 
