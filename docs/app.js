@@ -400,9 +400,52 @@ function hasPerm(perm) {
 // ─── Motor de estado ──────────────────────────────────────────────────────────
 
 function setState(phase, errorMsg = null) {
+  const prev = state.phase;
   state.phase = phase;
   state.error = errorMsg;
+
+  // Camino incremental: si ya estabamos online y seguimos online (poll periodico
+  // /status cada 15s), NO reconstruimos todo el DOM via renderMainView(). Eso
+  // destruia #chat-input y cualquier otro input en edicion (causa real del
+  // "refresh borra lo que escribo"). Solo refrescamos el contenido seguro.
+  if (prev === 'online' && phase === 'online' && document.querySelector('.tab-bar')) {
+    applyOnlineUpdate();
+    return;
+  }
   render();
+}
+
+function applyOnlineUpdate() {
+  if (!state.data) { render(); return; }
+
+  // Cambio de pestaña/permiso/sesión puede requerir un render completo
+  // (mostrar/ocultar tab Admin/Tienda). Se detecta comparando tabs presentes
+  // con las que deberian estar.
+  const showAdmin = hasPerm('canUseAdminPanel');
+  const showMarket = !!state.session;
+  const tabBar = document.querySelector('.tab-bar');
+  const hasAdminBtn = !!tabBar?.querySelector('[data-tab="admin"]');
+  const hasMarketBtn = !!tabBar?.querySelector('[data-tab="market"]');
+  if (hasAdminBtn !== showAdmin || hasMarketBtn !== showMarket) {
+    render();
+    return;
+  }
+
+  updateTimestamp();
+
+  const headerName = document.querySelector('.header-name');
+  if (headerName) headerName.textContent = state.data.serverName || 'VS Server';
+
+  const container = document.getElementById('tab-content');
+  if (!container) return;
+  // En la pestaña chat NO se toca el contenedor: su input (#chat-input)
+  // guarda lo que el usuario está escribiendo. fetchChat() refresca solo
+  // #chat-messages sin destruir el input.
+  // En market el handler propio (fetchMarketOffers) se encarga.
+  switch (state.tab) {
+    case 'status': renderStatusTab(container, state.data); break;
+    case 'admin':  renderAdminTab(container, state.data);  break;
+  }
 }
 
 async function startPolling() {
@@ -513,6 +556,8 @@ function renderSetup() {
         <div id="setup-msg" class="setup-msg hidden"></div>
         <button type="submit" class="btn-primary" id="btn-connect">Conectar</button>
       </form>
+
+      ${renderConnectionGuideCard(cfg.url)}
 
       ${linked ? renderLinkedSection() : renderAuthSection()}
     </div>
@@ -1121,6 +1166,37 @@ function showMsg(elId, text, type) {
   if (!el) return;
   el.textContent = text;
   el.className = `setup-msg setup-msg--${type}`;
+}
+
+function renderConnectionGuideCard(configuredUrl = '') {
+  const relayMode = isRelayUrl(configuredUrl);
+  const urlLine = relayMode
+    ? `URL pública configurada: <code>${esc(configuredUrl || RELAY_API_SAMPLE)}</code>.`
+    : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
+  const apiKeyLine = relayMode
+    ? 'En modo relay la API key directa del bridge no se usa como vía pública normal y esta PWA no la envía.'
+    : 'En modo directo la API key sigue siendo obligatoria en el navegador.';
+  const intro = 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.';
+
+  return `
+    <section class="card guide-card setup-guide-card">
+      <div class="card-header">
+        <span class="card-icon">🔗</span>
+        <span class="card-title">Cómo Conecta Hoy</span>
+      </div>
+      <div class="guide-body">
+        <p class="guide-kicker">${intro}</p>
+        <ul class="guide-list">
+          <li>Flujo real: <code>web HTTPS</code> → <code>relay HTTPS</code> → <code>bridge HTTP</code> del mod en el servidor del juego.</li>
+          <li>${urlLine}</li>
+          <li>El bridge toma su puerto desde <code>config.json</code>. Puerto por defecto: <code>${BRIDGE_DEFAULT_PORT}</code>. Puerto recomendado hoy: <code>${BRIDGE_RECOMMENDED_PORT}/TCP</code>.</li>
+          <li>Si cambias el puerto, el relay seguirá funcionando si ese puerto está abierto y <code>PublicBridgeUrl</code> usa el mismo puerto real.</li>
+          <li>Seguridad recomendada: si tu hosting lo permite, abre el puerto del bridge solo para <code>${RELAY_ALLOWED_IP}</code>. Si no puedes filtrar por IP origen, usar un puerto no predeterminado sigue siendo mejor que reutilizar siempre <code>${BRIDGE_DEFAULT_PORT}</code>.</li>
+        </ul>
+        <p class="guide-note">${apiKeyLine}</p>
+      </div>
+    </section>
+  `;
 }
 
 // ─── Service worker ───────────────────────────────────────────────────────────
