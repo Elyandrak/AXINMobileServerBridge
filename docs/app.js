@@ -1,11 +1,12 @@
 /**
- * AXIN Bridge Dashboard v0.3.0
+ * AXIN Bridge Dashboard
  * Plataforma mobile de administración para servidores Vintage Story.
  * Tabs: Estado | Chat | Tienda | Admin
  * Sin dependencias externas. Vanilla JS.
  *
- * v0.3: sesión persistente en disco (servidor), login con password, paneles
- * editables (Info del server, Eventos), Jugadores como desplegable.
+ * La version del dashboard se lee de dashboardinfo.json (independiente del
+ * modinfo.json del mod servidor). Se muestra como "Dashboard vX.Y.Z" en el
+ * pie de la vista principal y en la pantalla de setup.
  */
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -46,7 +47,57 @@ const state = {
   panelPollTimer: null,
   accountInfo: null,    // { hasPassword, passwordsAllowed }
   authMode: 'login',    // 'login' | 'link'  — modo del setup inicial
+  // v0.4 — dashboard-owned metadata (no lo mezclamos con la version del mod).
+  dashboardInfo: null,   // { name, description, authors, version } cargado de dashboardinfo.json
+  // v0.4 — bloqueo de vista: cuando el usuario esta en una pantalla
+  // manual (setup/link/login), el polling periodico NO puede forzar
+  // un render completo por encima (eso borraba inputs y "autoconectaba").
+  viewLock: null,        // null | 'setup'
 };
+
+// ─── Dashboard metadata (independiente del mod) ──────────────────────────────
+
+async function loadDashboardInfo() {
+  if (state.dashboardInfo) return state.dashboardInfo;
+  try {
+    // cache-busting con la fecha del dia para evitar que la PWA sirva una version antigua.
+    const res = await fetch('dashboardinfo.json', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json();
+      state.dashboardInfo = {
+        name: String(data.name || 'AXIN Bridge Dashboard'),
+        description: String(data.description || ''),
+        authors: Array.isArray(data.authors) ? data.authors.map(String) : [],
+        version: String(data.version || '?'),
+      };
+    }
+  } catch {
+    state.dashboardInfo = { name: 'AXIN Bridge Dashboard', description: '', authors: [], version: '?' };
+  }
+  return state.dashboardInfo;
+}
+
+// ─── Edicion en curso (proteccion contra polling destructivo) ────────────────
+
+// true si hay algun input/textarea enfocado con contenido, o un campo crítico
+// (codigo de link / password) con texto. Si devuelve true, no debemos
+// reconstruir el DOM completo por encima.
+function hasPendingInput() {
+  const active = document.activeElement;
+  if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+    // Input enfocado: casi siempre esta editando. Proteger aunque este vacio:
+    // tipear y borrar hasta dejarlo vacio tambien debe preservar el foco.
+    return true;
+  }
+  // Campos criticos con contenido aunque no tengan foco (ej. usuario pulsa fuera
+  // pero no ha enviado todavia).
+  const criticalIds = ['inp-code', 'inp-link-pwd', 'inp-password', 'inp-player', 'inp-new-pwd', 'chat-input', 'inp-url', 'inp-key'];
+  for (const id of criticalIds) {
+    const el = document.getElementById(id);
+    if (el && el.value && el.value.length > 0) return true;
+  }
+  return false;
+}
 
 // ─── Config & Session ─────────────────────────────────────────────────────────
 
@@ -371,6 +422,9 @@ async function fetchPanels() {
 async function unlinkSession() {
   try { await apiPost('/auth/unlink', {}); } catch { /* best effort */ }
   clearSession();
+  // El usuario pidio desvincular. Tras el render cae en renderSetup que
+  // volvera a activar el viewLock por si quiere vincular otra cuenta.
+  state.viewLock = null;
   render();
 }
 
@@ -404,6 +458,19 @@ function setState(phase, errorMsg = null) {
   state.phase = phase;
   state.error = errorMsg;
 
+  // REGLA FUNDAMENTAL:
+  // Si la pantalla actual es setup/link/login (viewLock === 'setup'), el
+  // polling NO puede cambiar la vista aunque el servidor responda online.
+  // Solo se permite cambiar de vista si el phase recibido es 'error' grave
+  // (no transitorio). De lo contrario, el usuario escribe el codigo y, al
+  // recibir el siguiente /status ok, se le arrancaba del formulario.
+  if (state.viewLock === 'setup') {
+    // Silencioso: guardamos datos nuevos pero no re-renderizamos encima.
+    // El usuario saldra del setup solo tras un exito explicito (linkWithCode,
+    // loginWithPassword, handleSetupSubmit).
+    return;
+  }
+
   // Camino incremental: si ya estabamos online y seguimos online (poll periodico
   // /status cada 15s), NO reconstruimos todo el DOM via renderMainView(). Eso
   // destruia #chat-input y cualquier otro input en edicion (causa real del
@@ -412,11 +479,25 @@ function setState(phase, errorMsg = null) {
     applyOnlineUpdate();
     return;
   }
+
+  // Segunda capa de proteccion: si por lo que sea llegamos aqui con un input
+  // critico con foco o con texto, NO hagamos render completo — es mejor
+  // posponer hasta el siguiente tick.
+  if (hasPendingInput() && (phase === 'online' || phase === 'offline' || phase === 'loading')) {
+    return;
+  }
   render();
 }
 
 function applyOnlineUpdate() {
   if (!state.data) { render(); return; }
+
+  // Si hay un input en edicion en CUALQUIER lugar del DOM, NO hagamos nada
+  // destructivo. Solo actualizamos el timestamp del footer.
+  if (hasPendingInput()) {
+    updateTimestamp();
+    return;
+  }
 
   // Cambio de pestaña/permiso/sesión puede requerir un render completo
   // (mostrar/ocultar tab Admin/Tienda). Se detecta comparando tabs presentes
@@ -533,6 +614,12 @@ function renderSetup() {
   const cfg = loadConfig();
   const linked = state.session != null;
 
+  // Activar el bloqueo de vista: mientras el usuario este aqui, el polling
+  // NO puede sacarle a renderMainView ni borrarle inputs. Se desbloquea
+  // en los handlers de exito (setup-form submit, link, login) o si el
+  // usuario vuelve a la vista online via startPolling tras conectar.
+  state.viewLock = 'setup';
+
   setAppContext('setup', 'setup');
   app.innerHTML = `
     <div class="setup-screen">
@@ -560,6 +647,8 @@ function renderSetup() {
       ${renderConnectionGuideCard(cfg.url)}
 
       ${linked ? renderLinkedSection() : renderAuthSection()}
+
+      <div id="setup-footer" class="dashboard-version"></div>
     </div>
   `;
 
@@ -571,6 +660,32 @@ function renderSetup() {
   document.querySelectorAll('.auth-mode-btn').forEach(b => {
     b.addEventListener('click', () => { state.authMode = b.dataset.mode; renderSetup(); });
   });
+
+  // Normalizacion en vivo del codigo de vinculacion: mayusculas + sin espacios.
+  // El servidor ya hace Trim().ToUpperInvariant(), pero hacerlo aqui tambien
+  // evita que el usuario se equivoque y que la validacion cliente (minimo
+  // de caracteres) se dispare por espacios invisibles.
+  const inpCode = document.getElementById('inp-code');
+  if (inpCode) {
+    inpCode.addEventListener('input', () => {
+      const pos = inpCode.selectionStart;
+      const next = inpCode.value.replace(/\s+/g, '').toUpperCase();
+      if (inpCode.value !== next) {
+        inpCode.value = next;
+        try { inpCode.setSelectionRange(pos, pos); } catch {}
+      }
+    });
+    // Enter en el codigo dispara vincular si hay algo escrito.
+    inpCode.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); handleLink(); } });
+  }
+  const inpLinkPwd = document.getElementById('inp-link-pwd');
+  if (inpLinkPwd) {
+    inpLinkPwd.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); handleLink(); } });
+  }
+
+  // Footer discreto con version del dashboard.
+  const footer = document.getElementById('setup-footer');
+  if (footer) footer.textContent = dashboardVersionLabel();
 }
 
 function renderLinkedSection() {
@@ -605,22 +720,32 @@ function renderAuthSection() {
       </div>
       ${mode === 'login' ? `
         <p class="link-hint">Introduce tu nombre de jugador y la contraseña definida tras vincularte.</p>
-        <div class="link-form">
-          <input id="inp-player" class="field-input" type="text"
-            placeholder="Nombre de jugador" autocorrect="off" autocapitalize="off" spellcheck="false">
-          <input id="inp-password" class="field-input" type="password"
-            placeholder="Contraseña" autocorrect="off" autocapitalize="none" spellcheck="false">
-          <button class="btn-primary btn-sm" id="btn-login">Entrar</button>
+        <div class="link-form link-form-col">
+          <label class="field-label">Nombre de jugador
+            <input id="inp-player" class="field-input" type="text"
+              placeholder="Tu nombre en el juego" autocorrect="off" autocapitalize="off" spellcheck="false">
+          </label>
+          <label class="field-label">Contraseña
+            <input id="inp-password" class="field-input" type="password"
+              placeholder="Contraseña" autocorrect="off" autocapitalize="none" spellcheck="false">
+          </label>
+          <button class="btn-primary" id="btn-login">Entrar</button>
         </div>
         <p class="link-hint">¿Primera vez? Pulsa <strong>Vincular con código</strong>.</p>
       ` : `
-        <p class="link-hint">Ejecuta <code>/ams link</code> en el juego y pega el código aquí. Opcionalmente define una contraseña para poder volver a entrar sin generar otro código.</p>
-        <div class="link-form">
-          <input id="inp-code" class="field-input code-input" type="text" maxlength="6"
-            placeholder="ABC123" autocorrect="off" autocapitalize="characters" spellcheck="false">
-          <input id="inp-link-pwd" class="field-input" type="password"
-            placeholder="Contraseña opcional (mín. 6)" autocorrect="off" autocapitalize="none" spellcheck="false">
-          <button class="btn-primary btn-sm" id="btn-link">Vincular</button>
+        <p class="link-hint">Ejecuta <code>/ams link</code> en el juego y pega aquí el código de 6 caracteres. La contraseña es <strong>opcional</strong> y solo sirve para volver a entrar sin generar otro código.</p>
+        <div class="link-form link-form-col">
+          <label class="field-label code-field">Código (6 caracteres)
+            <input id="inp-code" class="field-input code-input" type="text" maxlength="6" inputmode="latin"
+              placeholder="ABC123" autocorrect="off" autocapitalize="characters" spellcheck="false"
+              autocomplete="off">
+          </label>
+          <label class="field-label">Contraseña <span class="field-hint">(opcional, mín. 6)</span>
+            <input id="inp-link-pwd" class="field-input" type="password"
+              placeholder="Déjalo en blanco si no quieres definir contraseña" autocorrect="off" autocapitalize="none" spellcheck="false"
+              autocomplete="new-password">
+          </label>
+          <button class="btn-primary" id="btn-link">Vincular</button>
         </div>
       `}
       <div id="link-msg" class="setup-msg hidden"></div>
@@ -655,6 +780,9 @@ async function handleSetupSubmit(e) {
     if (!res.ok) { showMsg('setup-msg', `Error HTTP ${res.status}.`, 'error'); return; }
     await res.json();
     saveConfig({ url, apiKey: relayMode ? '' : apiKey });
+    // El usuario pulso Conectar explicitamente: liberamos el viewLock para
+    // que el polling pueda cambiar la vista a online/offline.
+    state.viewLock = null;
     startPolling();
   } catch (err) {
     showMsg('setup-msg', err.name === 'AbortError' ? 'Sin respuesta.' : `Error: ${err.message}`, 'error');
@@ -664,13 +792,24 @@ async function handleSetupSubmit(e) {
 }
 
 async function handleLink() {
-  const code = document.getElementById('inp-code')?.value.trim();
+  // Normalizamos SIEMPRE antes de validar/enviar: el servidor aplica
+  // Trim().ToUpperInvariant(), pero el cliente puede tener espacios pegados,
+  // letras minusculas, un newline final de copiar/pegar, etc.
+  const rawCode = document.getElementById('inp-code')?.value ?? '';
+  const code = rawCode.replace(/\s+/g, '').toUpperCase();
   const pwd = document.getElementById('inp-link-pwd')?.value;
-  if (!code || code.length < 4) { showMsg('link-msg', 'Introduce el código de 6 caracteres.', 'error'); return; }
+  if (!code) { showMsg('link-msg', 'Introduce el código que te dio /ams link.', 'error'); return; }
+  if (code.length !== 6) { showMsg('link-msg', `Código de 6 caracteres. Has introducido ${code.length}.`, 'error'); return; }
   if (pwd && pwd.length < 6) { showMsg('link-msg', 'La contraseña debe tener al menos 6 caracteres.', 'error'); return; }
+  const btn = document.getElementById('btn-link');
+  if (btn) { btn.disabled = true; btn.textContent = 'Vinculando…'; }
   const r = await linkWithCode(code, pwd || undefined);
+  if (btn) { btn.disabled = false; btn.textContent = 'Vincular'; }
   if (r.ok) {
     showMsg('link-msg', 'Vinculado correctamente.', 'success');
+    // Exito explicito del usuario: liberamos el viewLock para que el polling
+    // pueda volver a controlar la vista.
+    state.viewLock = null;
     setTimeout(render, 800);
   } else {
     showMsg('link-msg', r.error === 'invalid_or_expired_code' ? 'Código inválido o expirado.' : r.error, 'error');
@@ -684,6 +823,7 @@ async function handleLogin() {
   const r = await loginWithPassword(playerName, password);
   if (r.ok) {
     showMsg('link-msg', 'Sesión iniciada.', 'success');
+    state.viewLock = null;
     setTimeout(render, 600);
   } else if (r.error === 'rate_limited') {
     showMsg('link-msg', `Demasiados intentos. Espera ${r.waitSeconds || 60}s.`, 'error');
@@ -761,6 +901,8 @@ function renderMainView() {
 
     <footer class="footer">
       <span id="ts-label" class="footer-ts">${formatRelTime(state.lastUpdate)}</span>
+      <span class="footer-sep" aria-hidden="true">·</span>
+      <span class="footer-version">${esc(dashboardVersionLabel())}</span>
     </footer>
   `;
 
@@ -1122,6 +1264,7 @@ function renderOffline(reason) {
       <p class="offline-last">${lastSeen}</p>
       <button class="btn-retry" id="btn-retry">Reintentar</button>
     </div>
+    <div class="dashboard-version">${esc(dashboardVersionLabel())}</div>
   `;
 
   document.getElementById('btn-settings')?.addEventListener('click', renderSetup);
@@ -1154,6 +1297,11 @@ function formatRelTime(date) {
   if (secs < 5)  return 'Actualizado ahora';
   if (secs < 60) return `Actualizado hace ${secs}s`;
   return `Actualizado hace ${Math.round(secs / 60)}min`;
+}
+
+function dashboardVersionLabel() {
+  const v = state.dashboardInfo?.version || '?';
+  return `Dashboard v${v}`;
 }
 
 function updateTimestamp() {
@@ -1242,9 +1390,15 @@ if ('serviceWorker' in navigator) {
 
 state.session = loadSession();
 
-if (hasConfig()) {
-  setState('loading');
-  startPolling();
-} else {
-  setState('setup');
-}
+// Cargamos la info del dashboard ANTES del primer render para que la version
+// aparezca ya desde el primer frame. Si el fetch falla, loadDashboardInfo
+// deja valores por defecto y el arranque continua.
+(async () => {
+  await loadDashboardInfo();
+  if (hasConfig()) {
+    setState('loading');
+    startPolling();
+  } else {
+    setState('setup');
+  }
+})();
