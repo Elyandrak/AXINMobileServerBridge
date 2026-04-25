@@ -787,6 +787,13 @@ async function handleSetupSubmit(e) {
     // El usuario pulso Conectar explicitamente: liberamos el viewLock para
     // que el polling pueda cambiar la vista a online/offline.
     state.viewLock = null;
+    // Forzar transicion setup -> loading ANTES de startPolling. Sin esto,
+    // cuando fetchStatus resuelve y llama setState('online'), la guarda
+    // hasPendingInput() retorna true (los inputs del setup-form siguen vivos
+    // con texto/foco) y bloquea el render de la vista online — por eso hacia
+    // falta refresh manual. Tras renderLoading() los inputs ya no existen.
+    state.phase = 'loading';
+    renderLoading();
     startPolling();
   } catch (err) {
     showMsg('setup-msg', err.name === 'AbortError' ? 'Sin respuesta.' : `Error: ${err.message}`, 'error');
@@ -1321,34 +1328,14 @@ function showMsg(elId, text, type) {
   el.className = `setup-msg setup-msg--${type}`;
 }
 
-function renderConnectionGuideCard(configuredUrl = '') {
-  const relayMode = isRelayUrl(configuredUrl);
-  const urlLine = relayMode
-    ? `URL pública configurada: <code>${esc(configuredUrl || RELAY_API_SAMPLE)}</code>.`
-    : `URL pública recomendada: <code>${esc(RELAY_API_SAMPLE)}</code>.`;
-  const apiKeyLine = relayMode
-    ? 'En modo relay la API key directa del bridge no se usa como vía pública normal y esta PWA no la envía.'
-    : 'En modo directo la API key sigue siendo obligatoria en el navegador.';
-  const intro = 'AXINMobileServerBridge funciona hoy con relay VPS HTTPS intermedio.';
-
+function renderConnectionGuideCard(_configuredUrl = '') {
+  // Tarjeta minimalista. La guia tecnica completa vive en la wiki.
+  // Antes mezclaba conceptos del backend (puertos, IPs, modo directo vs relay)
+  // que confundian al usuario final, asi que se redujo a un solo enlace.
   return `
-    <section class="card guide-card setup-guide-card">
-      <div class="card-header">
-        <span class="card-icon">🔗</span>
-        <span class="card-title">Cómo Conecta Hoy</span>
-      </div>
-      <div class="guide-body">
-        <p class="guide-kicker">${intro}</p>
-        <ul class="guide-list">
-          <li>Flujo real: <code>web HTTPS</code> → <code>relay HTTPS</code> → <code>bridge HTTP</code> del mod en el servidor del juego.</li>
-          <li>${urlLine}</li>
-          <li>El bridge toma su puerto desde <code>config.json</code>. Puerto por defecto: <code>${BRIDGE_DEFAULT_PORT}</code>. Puerto recomendado hoy: <code>${BRIDGE_RECOMMENDED_PORT}/TCP</code>.</li>
-          <li>Si cambias el puerto, el relay seguirá funcionando si ese puerto está abierto y <code>PublicBridgeUrl</code> usa el mismo puerto real.</li>
-          <li>Seguridad recomendada: si tu hosting lo permite, abre el puerto del bridge solo para <code>${RELAY_ALLOWED_IP}</code>. Si no puedes filtrar por IP origen, usar un puerto no predeterminado sigue siendo mejor que reutilizar siempre <code>${BRIDGE_DEFAULT_PORT}</code>.</li>
-        </ul>
-        <p class="guide-note">${apiKeyLine}</p>
-      </div>
-    </section>
+    <p class="setup-tip">
+      ¿Primera vez? Lo más fácil es ejecutar <code>/ams appweb</code> en el chat del juego y abrir el enlace que recibes.
+    </p>
   `;
 }
 
@@ -1445,10 +1432,14 @@ state.session = loadSession();
 // deja valores por defecto y el arranque continua.
 (async () => {
   await loadDashboardInfo();
-  // Si llega un code via deep-link y no hay sesion vinculada, fuerza setup
-  // mode='link' para que el jugador revise y pulse Vincular. Si ya hay sesion
-  // valida ignoramos el code (el codigo es de un solo uso, no debemos quemarlo).
-  if (state.prefillCode && !state.session) {
+  // Si llega un code via deep-link (de /ams appweb), forzamos setup mode='link'
+  // SIEMPRE, aunque haya sesion guardada en localStorage. Motivo: el jugador
+  // ejecuto /ams appweb expresamente porque queria re-vincularse o cambiar de
+  // servidor; saltarse el setup para entrar con la session vieja le deja sin
+  // ver el form prefilled y "se traga" el codigo nuevo. La sesion vieja se
+  // mantiene en state — si el usuario pulsa Vincular, se reemplaza limpia;
+  // si cancela y va a Settings, su session previa sigue ahi.
+  if (state.prefillCode) {
     setState('setup');
     return;
   }

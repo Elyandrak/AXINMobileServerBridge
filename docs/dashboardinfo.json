@@ -2,5 +2,5 @@
   "name": "AXIN Bridge Dashboard",
   "description": "PWA mobile dashboard for AXIN Server Bridge. Independent version metadata for the web client only (not the server mod DLL).",
   "authors": ["elYandrack"],
-  "version": "1.0.2"
+  "version": "1.0.3"
 }
