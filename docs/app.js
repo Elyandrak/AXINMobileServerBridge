@@ -47,6 +47,10 @@ const state = {
   panelPollTimer: null,
   accountInfo: null,    // { hasPassword, passwordsAllowed }
   authMode: 'login',    // 'login' | 'link'  — modo del setup inicial
+  // v0.4.4 — codigo de vinculacion entrante via ?code= (de /ams appweb).
+  // Se prefill en inp-code al renderizar setup mode='link'. Se limpia tras
+  // un linkWithCode con exito o si el usuario cambia de modo.
+  prefillCode: null,
   // v0.4 — dashboard-owned metadata (no lo mezclamos con la version del mod).
   dashboardInfo: null,   // { name, description, authors, version } cargado de dashboardinfo.json
   // v0.4 — bloqueo de vista: cuando el usuario esta en una pantalla
@@ -737,7 +741,7 @@ function renderAuthSection() {
         <div class="link-form link-form-col">
           <label class="field-label code-field">Código (6 caracteres)
             <input id="inp-code" class="field-input code-input" type="text" maxlength="6" inputmode="latin"
-              placeholder="ABC123" autocorrect="off" autocapitalize="characters" spellcheck="false"
+              placeholder="ABC123" value="${esc(state.prefillCode || '')}" autocorrect="off" autocapitalize="characters" spellcheck="false"
               autocomplete="off">
           </label>
           <label class="field-label">Contraseña <span class="field-hint">(opcional, mín. 6)</span>
@@ -810,6 +814,7 @@ async function handleLink() {
     // Exito explicito del usuario: liberamos el viewLock para que el polling
     // pueda volver a controlar la vista.
     state.viewLock = null;
+    state.prefillCode = null;
     setTimeout(render, 800);
   } else {
     showMsg('link-msg', r.error === 'invalid_or_expired_code' ? 'Código inválido o expirado.' : r.error, 'error');
@@ -825,7 +830,7 @@ async function handleLogin() {
     showMsg('link-msg', 'Sesión iniciada.', 'success');
     state.viewLock = null;
     setTimeout(render, 600);
-  } else if (r.error === 'rate_limited') {
+  } else if (r.error === 'login_locked' || r.error === 'rate_limited') {
     showMsg('link-msg', `Demasiados intentos. Espera ${r.waitSeconds || 60}s.`, 'error');
   } else if (r.error === 'invalid_credentials') {
     showMsg('link-msg', 'Jugador o contraseña incorrectos.', 'error');
@@ -1388,6 +1393,51 @@ if ('serviceWorker' in navigator) {
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────
 
+// v0.4.4 — Soporte de deep-link desde /ams appweb:
+//   ?server=<url>  -> guarda config.url (apiKey vacia si es relay)
+//   ?code=<XXXXXX> -> prefill codigo de vinculacion + autoMode 'link'
+// Tras consumir los params los borramos de la URL (el codigo es de un solo
+// uso; mantenerlo en la barra de direcciones invitaria a compartirlo).
+function consumeDeepLinkParams() {
+  let server = null;
+  let code = null;
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    server = sp.get('server');
+    code = sp.get('code');
+    // Hash params como fallback (navegadores muy estrictos / lectura cliente)
+    if ((!server || !code) && window.location.hash && window.location.hash.length > 1) {
+      const hp = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      if (!server) server = hp.get('server');
+      if (!code) code = hp.get('code');
+    }
+  } catch { /* ignore */ }
+  if (!server && !code) return;
+
+  if (server) {
+    const trimmed = String(server).trim();
+    if (trimmed) {
+      const cur = loadConfig();
+      saveConfig({
+        url: trimmed,
+        apiKey: isRelayUrl(trimmed) ? '' : (cur.apiKey || ''),
+      });
+    }
+  }
+  if (code) {
+    const norm = String(code).replace(/\s+/g, '').toUpperCase().slice(0, 6);
+    if (norm) {
+      state.prefillCode = norm;
+      state.authMode = 'link';
+    }
+  }
+  try {
+    history.replaceState({}, '', window.location.pathname);
+  } catch { /* ignore */ }
+}
+
+consumeDeepLinkParams();
+
 state.session = loadSession();
 
 // Cargamos la info del dashboard ANTES del primer render para que la version
@@ -1395,6 +1445,13 @@ state.session = loadSession();
 // deja valores por defecto y el arranque continua.
 (async () => {
   await loadDashboardInfo();
+  // Si llega un code via deep-link y no hay sesion vinculada, fuerza setup
+  // mode='link' para que el jugador revise y pulse Vincular. Si ya hay sesion
+  // valida ignoramos el code (el codigo es de un solo uso, no debemos quemarlo).
+  if (state.prefillCode && !state.session) {
+    setState('setup');
+    return;
+  }
   if (hasConfig()) {
     setState('loading');
     startPolling();
