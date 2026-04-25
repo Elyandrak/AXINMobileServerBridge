@@ -4,7 +4,7 @@
  * Las rutas API del bridge directo y del relay VPS siempre van a red.
  */
 
-const CACHE = 'axin-bridge-v5';
+const CACHE = 'axin-bridge-v6';
 const APP_SHELL = ['./', './index.html', './app.js', './style.css', './manifest.json', './icon.svg'];
 const API_PREFIXES = ['/status', '/chat', '/auth', '/market', '/admin', '/panels'];
 

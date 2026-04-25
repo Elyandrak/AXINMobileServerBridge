@@ -1389,12 +1389,22 @@ function consumeDeepLinkParams() {
   let server = null;
   let code = null;
   try {
-    const sp = new URLSearchParams(window.location.search);
+    // VS chat envia el href con `&amp;` literal (no decodifica entidades VTML
+    // antes de pasar al OS browser). Resultado: el segundo parametro llega
+    // como `amp;server=...`, lo que rompia URLSearchParams.get('server').
+    // Normalizamos `&amp;` -> `&` (y `amp;` residual al inicio) antes de parsear.
+    // El primer parametro (`code`) no se ve afectado porque va pegado a `?`.
+    const normalize = s => String(s || '')
+      .replace(/&amp;/gi, '&')
+      .replace(/(^\?|^#|&)amp;/gi, '$1');
+    const rawSearch = normalize(window.location.search.replace(/^\?/, ''));
+    const sp = new URLSearchParams(rawSearch);
     server = sp.get('server');
     code = sp.get('code');
     // Hash params como fallback (navegadores muy estrictos / lectura cliente)
     if ((!server || !code) && window.location.hash && window.location.hash.length > 1) {
-      const hp = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const rawHash = normalize(window.location.hash.replace(/^#/, ''));
+      const hp = new URLSearchParams(rawHash);
       if (!server) server = hp.get('server');
       if (!code) code = hp.get('code');
     }
